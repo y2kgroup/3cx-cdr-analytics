@@ -39,17 +39,17 @@ cdrRoutes.get('/kpis', async (req: Request, res: Response) => {
       }
     };
 
-    // Run aggregation pipeline
+    // Aggregate statistics
     const stats = await Call.aggregate([
       { $match: dateQuery },
       {
         $group: {
           _id: null,
           totalCalls: { $sum: 1 },
-          incomingCalls: {
+          incomingCalls: { 
             $sum: { $cond: [{ $eq: ['$direction', 'incoming'] }, 1, 0] }
           },
-          outgoingCalls: {
+          outgoingCalls: { 
             $sum: { $cond: [{ $eq: ['$direction', 'outgoing'] }, 1, 0] }
           },
           totalDurationSec: { $sum: '$durationSec' },
@@ -66,17 +66,7 @@ cdrRoutes.get('/kpis', async (req: Request, res: Response) => {
       totalCost: 0
     };
 
-    // Convert duration to minutes
-    const talkTimeMin = Math.round(result.totalDurationSec / 60);
-
-    res.json({
-      totalCalls: result.totalCalls,
-      incoming: result.incomingCalls,
-      outgoing: result.outgoingCalls,
-      talkTimeMin,
-      totalCost: result.totalCost
-    });
-
+    res.json(result);
   } catch (error) {
     console.error('Error fetching KPIs:', error);
     res.status(500).json({ error: 'Failed to fetch KPIs' });
@@ -84,25 +74,19 @@ cdrRoutes.get('/kpis', async (req: Request, res: Response) => {
 });
 
 /**
- * GET /api/area-codes/top - Get top area codes by call count
+ * GET /api/area-codes/top - Get top area codes by call volume
  */
 cdrRoutes.get('/area-codes/top', async (req: Request, res: Response) => {
   try {
-    const { from, to } = dateRangeSchema.parse(req.query);
-    const { limit } = topAreasSchema.parse(req.query);
+    const { from, to, limit = 10 } = { ...dateRangeSchema.parse(req.query), ...topAreasSchema.parse(req.query) };
     
-    // Default to last 30 days and top 10
     const endDate = to ? new Date(to + 'T23:59:59.999Z') : new Date();
     const startDate = from ? new Date(from + 'T00:00:00.000Z') : 
       new Date(endDate.getTime() - (30 * 24 * 60 * 60 * 1000));
-    const topLimit = limit || 10;
 
     const dateQuery = {
-      start: {
-        $gte: startDate,
-        $lte: endDate
-      },
-      areaCode: { $ne: null } // Only include calls with area codes
+      start: { $gte: startDate, $lte: endDate },
+      areaCode: { $ne: null }
     };
 
     const topAreaCodes = await Call.aggregate([
@@ -110,22 +94,21 @@ cdrRoutes.get('/area-codes/top', async (req: Request, res: Response) => {
       {
         $group: {
           _id: '$areaCode',
-          calls: { $sum: 1 }
+          count: { $sum: 1 }
         }
       },
-      { $sort: { calls: -1 } },
-      { $limit: topLimit },
+      { $sort: { count: -1 } },
+      { $limit: limit },
       {
         $project: {
-          _id: 0,
           areaCode: '$_id',
-          calls: 1
+          count: 1,
+          _id: 0
         }
       }
     ]);
 
     res.json(topAreaCodes);
-
   } catch (error) {
     console.error('Error fetching top area codes:', error);
     res.status(500).json({ error: 'Failed to fetch top area codes' });
@@ -138,42 +121,38 @@ cdrRoutes.get('/area-codes/top', async (req: Request, res: Response) => {
 cdrRoutes.get('/calls', async (req: Request, res: Response) => {
   try {
     const { from, to } = dateRangeSchema.parse(req.query);
-    const { page, size } = paginationSchema.parse(req.query);
+    const { page = 1, size = 50 } = paginationSchema.parse(req.query);
     
-    const currentPage = page || 1;
-    const pageSize = Math.min(size || 50, 100); // Max 100 per page
-    
-    // Default to last 30 days
     const endDate = to ? new Date(to + 'T23:59:59.999Z') : new Date();
     const startDate = from ? new Date(from + 'T00:00:00.000Z') : 
-      new Date(endDate.getTime() - (30 * 24 * 60 * 60 * 1000));
+      new Date(endDate.getTime() - (7 * 24 * 60 * 60 * 1000)); // Last 7 days default
 
     const dateQuery = {
-      start: {
-        $gte: startDate,
-        $lte: endDate
-      }
+      start: { $gte: startDate, $lte: endDate }
     };
 
+    const skip = (page - 1) * size;
+    
     const calls = await Call.find(dateQuery)
       .sort({ start: -1 })
-      .limit(pageSize)
-      .skip((currentPage - 1) * pageSize)
+      .skip(skip)
+      .limit(size)
       .lean();
 
     const totalCalls = await Call.countDocuments(dateQuery);
-    const totalPages = Math.ceil(totalCalls / pageSize);
+    const totalPages = Math.ceil(totalCalls / size);
 
     res.json({
       calls,
       pagination: {
-        page: currentPage,
-        size: pageSize,
-        total: totalCalls,
-        pages: totalPages
+        page,
+        size,
+        totalCalls,
+        totalPages,
+        hasNext: page < totalPages,
+        hasPrev: page > 1
       }
     });
-
   } catch (error) {
     console.error('Error fetching calls:', error);
     res.status(500).json({ error: 'Failed to fetch calls' });
